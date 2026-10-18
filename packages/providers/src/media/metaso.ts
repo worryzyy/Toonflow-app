@@ -39,21 +39,27 @@ function wait(signal: AbortSignal, ms: number) {
 }
 
 async function pollVideo(context: ProviderContext, baseUrl: string, apiKey: string, taskId: string, signal: AbortSignal): Promise<string> {
-  while (true) {
-    const response = await context.tool.fetch(`${baseUrl}/v2/query/video_generation/${taskId}`, {
-      headers: { Authorization: `Bearer ${apiKey}` },
-      signal,
-    });
-    if (!response.ok) throw new Error(`查询任务失败：HTTP ${response.status}`);
-    const data = await response.json() as { task?: { status?: string; content?: { url?: string } } };
-    const status = data?.task?.status;
-    if (status === "succeeded") {
-      const url = data.task?.content?.url;
-      if (!url) throw new Error("视频生成成功但未返回视频地址");
-      return url;
+  let status: string | undefined;
+  try {
+    while (true) {
+      const response = await context.tool.fetch(`${baseUrl}/v2/query/video_generation/${taskId}`, {
+        headers: { Authorization: `Bearer ${apiKey}` },
+        signal,
+      });
+      if (!response.ok) throw new Error(`查询任务失败：HTTP ${response.status}（任务 ID：${taskId}）`);
+      const data = await response.json() as { task?: { status?: string; content?: { url?: string } } };
+      status = data?.task?.status;
+      if (status === "succeeded") {
+        const url = data.task?.content?.url;
+        if (!url) throw new Error(`视频生成成功但未返回视频地址（任务 ID：${taskId}）`);
+        return url;
+      }
+      if (status === "failed" || status === "cancelled") throw new Error(`${context.tool.errorMessage?.(data) || (status === "failed" ? "视频生成失败" : "视频任务已取消")}（任务 ID：${taskId}）`);
+      await wait(signal, 5000);
     }
-    if (status === "failed") throw new Error(context.tool.errorMessage?.(data) || "视频生成失败");
-    await wait(signal, 5000);
+  } catch (error) {
+    if ((error as Error | null)?.name !== "TimeoutError") throw error;
+    throw new Error(`等待视频生成超时，任务 ID：${taskId}，最后状态：${status ?? "未知"}`);
   }
 }
 
@@ -102,8 +108,8 @@ export default {
       images.forEach((url) => content.push({ role: "reference_image", type: "image_url", image_url: { url } }));
     }
 
-    // ACT: 单次生成最多等待 10 分钟。
-    const signal = AbortSignal.any([AbortSignal.timeout(10 * 60_000), ...(this.signal ? [this.signal] : [])]);
+    // ACT: 单次生成最多等待 30 分钟，2K 多图参考任务可能接近上限；超时报错带任务 ID 便于到平台追回结果。
+    const signal = AbortSignal.any([AbortSignal.timeout(30 * 60_000), ...(this.signal ? [this.signal] : [])]);
     const submitResponse = await this.tool.fetch(`${baseUrl}/v2/video_generation`, {
       method: "POST",
       headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },

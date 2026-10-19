@@ -81,6 +81,21 @@ export default {
       durationResolutionMap: [{ duration: [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15], resolution: ["768P", "2K"] }],
     },
   ] satisfies ProviderModel[],
+  // ACT: 参考图长边缩到 2048 内并转 WebP（保留透明），降低跨境上传体积；URL 和已是小尺寸 JPEG/WebP 的图原样上传。
+  async processMedia(request: ImageRequest | VideoRequest | AudioRequest) {
+    const compress = async (input: MediaInput, quality: number) => {
+      if (input.type === "url") return input;
+      const info = await this.tool.media.inspectImage(input);
+      const scale = Math.min(1, 2048 / Math.max(info.width, info.height));
+      if (scale === 1 && (info.format === "jpeg" || info.format === "webp")) return input;
+      return this.tool.media.resizeImage(input, { width: Math.round(info.width * scale), height: Math.round(info.height * scale), format: "webp", quality });
+    };
+    const media = request as VideoRequest;
+    const images = media.images ? await Promise.all(media.images.map(input => compress(input, 90))) : undefined;
+    const firstFrame = media.firstFrame ? await compress(media.firstFrame, 95) : undefined;
+    const lastFrame = media.lastFrame ? await compress(media.lastFrame, 95) : undefined;
+    return { ...request, ...(images ? { images } : {}), ...(firstFrame ? { firstFrame } : {}), ...(lastFrame ? { lastFrame } : {}) };
+  },
   async generateVideo(request: VideoRequest): Promise<MediaAsset[]> {
     const apiKey = this.config.apiKey?.trim();
     if (!apiKey) throw new Error("请填写 API Key");
